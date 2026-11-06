@@ -104,7 +104,7 @@ def delete_arrangement_clip(ctx: Context, track_index: int, arrangement_clip_ind
     return f"Deleted arrangement clip '{result.get('name')}' ({result.get('start_time')}-{result.get('end_time')})"
 
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 def write_automation(
     ctx: Context,
     track_index: int,
@@ -113,8 +113,14 @@ def write_automation(
     parameter: str | int,
     points: list[dict[str, float]],
 ) -> str:
-    """Write clip automation for a device parameter. points = [{"time": beats, "value": v}, ...].
-    Replaces any existing envelope for that parameter on the clip."""
+    """Replace a Session clip's parameter envelope with explicit automation steps.
+
+    points = [{"time": clip_beats, "duration": positive_beats, "value": native_value}, ...].
+    Each duration holds that value over the requested interval. Legacy points
+    omitting duration retain zero duration and return a warning; supply duration
+    for sustained automation. Replaces the entire existing parameter envelope.
+    Verify with get_clip_automation_snapshot; this is not listening evidence.
+    """
     r = get_ableton_connection().send_command(
         "write_automation",
         {
@@ -125,7 +131,7 @@ def write_automation(
             "points": points,
         },
     )
-    return f"Wrote {r.get('point_count')} automation points for {r.get('parameter')}"
+    return json.dumps(r, indent=2)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True))

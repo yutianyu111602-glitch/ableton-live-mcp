@@ -418,9 +418,28 @@ def get_scale_info(ctx: Context) -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-def save_set(ctx: Context) -> str:
-    """Save the current Live set to its existing file, if the Live API supports it
-    (it does not on most versions). Returns whether the API call is available and
-    whether the save succeeded. To save under a new name/path, use the GUI Save-As."""
+def save_set(ctx: Context, file_path: str | None = None, timeout: float = 10.0) -> str:
+    """Save the current set. On Windows, when the Live API is unavailable,
+    supply file_path: the absolute path of the CURRENT, already-saved .als.
+    The fallback verifies the Live window, backs up that file, sends Ctrl+S,
+    and verifies a changed, readable .als. Check saved:true, not just available.
+    An unchanged file is unverified (the set may already be clean). Never-saved
+    sets and Save As still need the GUI. This tool is not batchable.
+    timeout is the verification wait in seconds (0.5-30)."""
+    from ..save_windows import save_existing_set, validate_timeout
+
+    validate_timeout(timeout)
     r = get_ableton_connection().send_command("try_save_project")
+    if r.get("available") is False:
+        import sys
+
+        if sys.platform == "win32":
+            from ..connection import ABLETON_HOST
+
+            if ABLETON_HOST not in ("localhost", "127.0.0.1", "::1"):
+                r = {"saved": False, "error": "local_live_required"}
+            else:
+                r = save_existing_set(file_path, timeout=timeout)
+        else:
+            r = {**r, "saved": False}
     return json.dumps(r, indent=2)

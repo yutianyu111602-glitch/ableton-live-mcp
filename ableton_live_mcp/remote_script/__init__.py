@@ -7,6 +7,7 @@ port 9877 and dispatches JSON commands to the Live API on the main thread.
 """
 
 import codecs
+import hashlib
 import json
 import math
 import os
@@ -27,7 +28,7 @@ from _Framework.ControlSurface import ControlSurface
 DEFAULT_PORT = int(os.environ.get("ABLETON_MCP_PORT", "9877"))
 HOST = os.environ.get("ABLETON_MCP_HOST", "127.0.0.1")
 MAX_REQUEST_BYTES = 10 * 1024 * 1024  # backstop against a poisoned request buffer
-BRIDGE_VERSION = "1.8.1"
+BRIDGE_VERSION = "1.8.1+testapi.2"
 
 
 def _display_number(text):
@@ -354,6 +355,9 @@ class AbletonMCP(ControlSurface):
         "delete_clip": lambda s, p: s._delete_clip(s._req(p, "track_index"), s._req(p, "clip_index")),
         "add_notes_to_clip": lambda s, p: s._add_notes_to_clip(s._req(p, "track_index"), s._req(p, "clip_index"), s._req(p, "notes")),
         "edit_notes": lambda s, p: s._edit_notes(s._req(p, "track_index"), s._req(p, "clip_index"), p.get("add", []), p.get("remove", [])),
+        "modify_notes_by_id": lambda s, p: s._modify_notes_by_id(s._req(p, "track_index"), s._req(p, "clip_index"), s._req(p, "changes"), s._req(p, "expected_fingerprint"), p.get("view", "session"), p.get("dry_run", True)),
+        "set_plugin_editor_state": lambda s, p: s._set_plugin_editor_state(s._req(p, "track_index"), s._req(p, "device_index"), s._req(p, "opened"), s._req(p, "expected_fingerprint"), p.get("track_type", "track"), p.get("chain_path"), p.get("dry_run", True)),
+        "set_test_device_parameter": lambda s, p: s._set_test_device_parameter(s._req(p, "track_index"), s._req(p, "device_index"), s._req(p, "parameter"), s._req(p, "value"), s._req(p, "expected_fingerprint"), p.get("expected_value"), p.get("track_type", "track"), p.get("chain_path"), p.get("dry_run", True)),
         "set_clip_name": lambda s, p: s._set_clip_name(s._req(p, "track_index"), s._req(p, "clip_index"), s._req(p, "name")),
         "set_clip_color": lambda s, p: s._set_clip_color(s._req(p, "track_index"), s._req(p, "clip_index"), p.get("color_index", 0)),
         "set_clip_groove": lambda s, p: s._set_clip_groove(s._req(p, "track_index"), s._req(p, "clip_index"), p.get("groove_index")),
@@ -434,6 +438,11 @@ class AbletonMCP(ControlSurface):
     }
 
     _READONLY_COMMANDS = {
+        "get_test_context": lambda s, p: s._get_test_context(),
+        "get_clip_snapshot": lambda s, p: s._get_clip_snapshot(s._req(p, "track_index"), s._req(p, "clip_index"), p.get("view", "session"), p.get("include_notes", True), p.get("note_offset", 0), p.get("note_limit", 512)),
+        "get_device_test_state": lambda s, p: s._get_device_test_state(s._req(p, "track_index"), s._req(p, "device_index"), p.get("track_type", "track"), p.get("chain_path")),
+        "get_clip_automation_snapshot": lambda s, p: s._get_clip_automation_snapshot(s._req(p, "track_index"), s._req(p, "clip_index"), s._req(p, "device_index"), s._req(p, "parameter"), p.get("view", "session"), p.get("track_type", "track"), p.get("chain_path"), p.get("sample_times")),
+        "get_max_device_info": lambda s, p: s._get_max_device_info(s._req(p, "track_index"), s._req(p, "device_index"), p.get("track_type", "track"), p.get("chain_path")),
         "get_session_info": lambda s, p: s._get_session_info(),
         "get_track_info": lambda s, p: s._get_track_info(s._req(p, "track_index")),
         "get_return_tracks": lambda s, p: s._get_return_tracks(),
@@ -1270,6 +1279,560 @@ class AbletonMCP(ControlSurface):
         return {"clip_name": clip.name, "length": clip.length,
                 "note_count": len(notes), "notes": notes}
 
+    # -- identity-checked test interfaces (no arbitrary code or Max messages) --
+    @staticmethod
+    def _test_index(value, label, maximum=None):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(label + " must be a nonnegative integer")
+        if maximum is not None and value >= maximum:
+            raise IndexError(label + " out of range")
+        return value
+
+    @staticmethod
+    def _test_number(value, label, minimum=None, maximum=None):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(label + " must be a finite number")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(label + " must be finite")
+        if minimum is not None and value < minimum:
+            raise ValueError(label + " below its allowed minimum")
+        if maximum is not None and value > maximum:
+            raise ValueError(label + " above its allowed maximum")
+        return value
+
+    @staticmethod
+    def _test_fields(obj, names):
+        """Missing API properties are unknown, never substituted with false/zero."""
+        values, unavailable = {}, {}
+        for name in names:
+            try:
+                value = getattr(obj, name)
+                if value is not None and not isinstance(value, (str, bool, int, float)):
+                    try:
+                        value = int(value)
+                    except (TypeError, ValueError):
+                        value = str(value)
+                if isinstance(value, float) and not math.isfinite(value):
+                    raise ValueError("nonfinite API value")
+                values[name] = value
+            except Exception as error:
+                values[name] = None
+                unavailable[name] = type(error).__name__
+        return values, unavailable
+
+    def _test_identity(self, obj):
+        """Opaque, bridge-lifetime identity tied to the actual Live object proxy."""
+        if obj is None:
+            return None
+        if not hasattr(self, "_test_scope"):
+            self._test_scope = uuid.uuid4().hex
+            self._test_object_refs = []
+        for old, identity in self._test_object_refs:
+            try:
+                if obj is old or obj == old:
+                    return identity
+            except (RuntimeError, ReferenceError):
+                continue
+        identity = uuid.uuid4().hex
+        self._test_object_refs.append((obj, identity))
+        # Retaining references also prevents an old numeric pointer being reused.
+        # Evicted objects receive fresh identities, invalidating old fingerprints.
+        if len(self._test_object_refs) > 8192:
+            self._test_object_refs = self._test_object_refs[-4096:]
+        return identity
+
+    @staticmethod
+    def _test_digest(value):
+        data = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+    def _test_clip(self, track_index, clip_index, view):
+        self._test_index(track_index, "track_index", len(self._song.tracks))
+        track = self._song.tracks[track_index]
+        if view == "session":
+            self._test_index(clip_index, "clip_index", len(track.clip_slots))
+            slot = track.clip_slots[clip_index]
+            if not slot.has_clip:
+                raise ValueError("No clip in the requested Session slot")
+            return track, slot.clip
+        if view == "arrangement":
+            if not hasattr(track, "arrangement_clips"):
+                raise ValueError("unsupported: arrangement_clips is not exposed by this Live build")
+            clips = track.arrangement_clips
+            self._test_index(clip_index, "clip_index", len(clips))
+            return track, clips[clip_index]
+        raise ValueError("view must be 'session' or 'arrangement'")
+
+    def _test_note_vector(self, clip):
+        if not clip.is_midi_clip:
+            raise ValueError("unsupported: audio clips do not have MIDI notes")
+        getter = getattr(clip, "get_all_notes_extended", None)
+        if not callable(getter):
+            raise ValueError("unsupported: complete native MIDI note vectors require get_all_notes_extended")
+        return getter()
+
+    def _test_note_dicts(self, vector):
+        notes, unavailable = [], {}
+        names = ("note_id", "pitch", "start_time", "duration", "velocity", "mute",
+                 "probability", "velocity_deviation", "release_velocity")
+        for note in vector:
+            values, missing = self._test_fields(note, names)
+            notes.append(values)
+            for name in missing:
+                unavailable[name] = unavailable.get(name, 0) + 1
+        return sorted(notes, key=lambda n: (n["note_id"] is None, n["note_id"] or 0,
+                                           n["start_time"] or 0, n["pitch"] or 0)), unavailable
+
+    def _test_clip_data(self, track, clip, view):
+        metadata, unavailable = self._test_fields(clip, (
+            "name", "length", "is_midi_clip", "is_audio_clip", "looping", "loop_start",
+            "loop_end", "start_marker", "end_marker", "signature_numerator",
+            "signature_denominator", "color_index"))
+        # Session start_time moves with launching; Arrangement boundaries identify content.
+        if view == "arrangement":
+            timeline, missing = self._test_fields(clip, ("start_time", "end_time"))
+            metadata.update(timeline)
+            unavailable.update(missing)
+        notes, missing_notes = [], {}
+        if clip.is_midi_clip:
+            notes, missing_notes = self._test_note_dicts(self._test_note_vector(clip))
+        identity = self._test_identity(clip)
+        basis = {"runtime_scope": self._test_scope, "clip_identity": identity,
+                 "track_identity": self._test_identity(track), "metadata": metadata,
+                 "notes": notes}
+        return {"clip_identity": identity, "track_identity": basis["track_identity"],
+                "identity_kind": "bridge_scoped_live_object", "runtime_scope": self._test_scope,
+                "view": view, "metadata": metadata, "unavailable": unavailable,
+                "note_fields_unavailable": missing_notes, "note_count": len(notes),
+                "fingerprint": self._test_digest(basis)}, notes
+
+    def _get_clip_snapshot(self, track_index, clip_index, view="session", include_notes=True,
+                           note_offset=0, note_limit=512):
+        self._test_index(note_offset, "note_offset")
+        self._test_index(note_limit, "note_limit")
+        if not 1 <= note_limit <= 4096:
+            raise ValueError("note_limit must be 1..4096")
+        if not isinstance(include_notes, bool):
+            raise ValueError("include_notes must be a boolean")
+        track, clip = self._test_clip(track_index, clip_index, view)
+        result, notes = self._test_clip_data(track, clip, view)
+        result.update({"track_index": track_index, "clip_index": clip_index,
+                       "note_offset": note_offset, "note_limit": note_limit,
+                       "notes": notes[note_offset:note_offset + note_limit] if include_notes else [],
+                       "notes_included": include_notes,
+                       "next_note_offset": (note_offset + note_limit
+                                            if include_notes and note_offset + note_limit < len(notes)
+                                            else None)})
+        runtime, missing = self._test_fields(clip, ("is_playing", "is_recording", "is_overdubbing"))
+        result["runtime"] = runtime
+        result["runtime_unavailable"] = missing
+        if not clip.is_midi_clip:
+            result["notes_status"] = "unsupported_for_audio_clip"
+        return result
+
+    def _get_test_context(self):
+        song_identity = self._test_identity(self._song)
+        project, unavailable = self._test_fields(self._song, ("name", "file_path", "is_modified"))
+        transport, missing = self._test_fields(self._song, (
+            "tempo", "is_playing", "current_song_time", "record_mode", "session_record",
+            "session_automation_record", "arrangement_overdub", "loop", "loop_start", "loop_length"))
+        selected = {"track": None, "device": None, "clip": None}
+        view = getattr(self._song, "view", None)
+        if view is not None:
+            track = getattr(view, "selected_track", None)
+            if track is not None:
+                selected["track"] = {"identity": self._test_identity(track), "name": track.name}
+                for kind, tracks in (("track", self._song.tracks), ("return", self._song.return_tracks),
+                                     ("master", [self._song.master_track])):
+                    for index, item in enumerate(tracks):
+                        if item == track:
+                            selected["track"].update({"track_type": kind, "track_index": index})
+                device = getattr(getattr(track, "view", None), "selected_device", None)
+                if device is not None:
+                    selected["device"] = {"identity": self._test_identity(device), "name": device.name,
+                                          "class_name": getattr(device, "class_name", None)}
+            detail = getattr(view, "detail_clip", None)
+            if detail is not None:
+                selected["clip"] = {"identity": self._test_identity(detail), "name": detail.name}
+                for ti, item in enumerate(self._song.tracks):
+                    for ci, slot in enumerate(item.clip_slots):
+                        if slot.has_clip and slot.clip == detail:
+                            selected["clip"].update({"view": "session", "track_index": ti, "clip_index": ci})
+                    for ci, clip in enumerate(getattr(item, "arrangement_clips", ())):
+                        if clip == detail:
+                            selected["clip"].update({"view": "arrangement", "track_index": ti, "clip_index": ci})
+        basis = {"runtime_scope": self._test_scope, "song_identity": song_identity,
+                 "project": project,
+                 "track_identities": [self._test_identity(t) for t in self._song.tracks]}
+        return {"runtime_scope": self._test_scope, "song_identity": song_identity,
+                "identity_kind": "bridge_scoped_live_object", "project": project,
+                "project_unavailable": unavailable, "transport": transport,
+                "transport_unavailable": missing, "selected": selected,
+                "live_version": self._live_version(), "bridge_version": BRIDGE_VERSION,
+                "fingerprint": self._test_digest(basis),
+                "save_capabilities": {"save_as": "requires_gui",
+                                      "reason": "No supported Save As operation is provided by this bridge; a disk copy cannot preserve unsaved RAM changes."}}
+
+    def _modify_notes_by_id(self, track_index, clip_index, changes, expected_fingerprint,
+                            view="session", dry_run=True):
+        if not isinstance(dry_run, bool):
+            raise ValueError("dry_run must be a boolean")
+        if not isinstance(changes, list) or not 1 <= len(changes) <= 1024:
+            raise ValueError("changes must contain 1..1024 note modifications")
+        track, clip = self._test_clip(track_index, clip_index, view)
+        before, notes = self._test_clip_data(track, clip, view)
+        if not isinstance(expected_fingerprint, str) or expected_fingerprint != before["fingerprint"]:
+            raise ValueError("stale_target: clip fingerprint changed; read a new snapshot before editing")
+        if not clip.is_midi_clip or not callable(getattr(clip, "apply_note_modifications", None)):
+            raise ValueError("unsupported: native apply_note_modifications is required; no note replacement fallback")
+        if any(getattr(clip, name, False) for name in ("is_recording", "is_overdubbing")):
+            raise ValueError("Clip is recording or overdubbing; no notes were changed")
+        if any(getattr(self._song, name, False) for name in ("record_mode", "session_record")):
+            raise ValueError("Live is recording; no notes were changed")
+        existing = {n["note_id"]: n for n in notes}
+        if None in existing or len(existing) != len(notes):
+            raise ValueError("unsupported: complete unique native note IDs are unavailable")
+        ranges = {"start_time": (0, None), "duration": (0, None), "velocity": (0, 127),
+                  "probability": (0, 1), "velocity_deviation": (-127, 127), "release_velocity": (0, 127)}
+        offsets = {"start_time_offset_beats", "start_time_offset_ms"}
+        allowed = set(ranges) | offsets | {"note_id", "pitch", "mute"}
+        planned, inverse, preview, seen = {}, [], [], set()
+        tempo = self._test_number(self._song.tempo, "tempo", minimum=0.000001)
+        for change in changes:
+            if not isinstance(change, dict) or set(change) - allowed:
+                raise ValueError("Each change must be a note dictionary containing only supported fields")
+            note_id = self._test_index(change.get("note_id"), "note_id")
+            if note_id in seen:
+                raise ValueError("Duplicate note_id in changes")
+            seen.add(note_id)
+            if note_id not in existing:
+                raise ValueError("note_id is not present in this clip: " + str(note_id))
+            original = existing[note_id]
+            update = {key: value for key, value in change.items() if key != "note_id"}
+            timing_fields = set(update) & ({"start_time"} | offsets)
+            if len(timing_fields) > 1:
+                raise ValueError("Use only one absolute or offset timing field per note")
+            for field in offsets:
+                if field in update:
+                    delta = self._test_number(update.pop(field), field)
+                    if field == "start_time_offset_ms":
+                        delta = delta * tempo / 60000.0
+                    update["start_time"] = original["start_time"] + delta
+            if not update:
+                raise ValueError("Each change must modify at least one note field")
+            for field, value in list(update.items()):
+                if original.get(field) is None:
+                    raise ValueError("unsupported: requested note field is not readable: " + field)
+                if field == "mute":
+                    if not isinstance(value, bool):
+                        raise ValueError("mute must be a boolean")
+                elif field == "pitch":
+                    self._test_index(value, "pitch", 128)
+                else:
+                    low, high = ranges[field]
+                    update[field] = self._test_number(value, field, low, high)
+                    if field == "duration" and update[field] <= 0:
+                        raise ValueError("duration must be positive")
+            effective = {field: value for field, value in update.items() if original[field] != value}
+            if effective:
+                planned[note_id] = effective
+                inverse.append({"note_id": note_id, **{field: original[field] for field in effective}})
+            after = dict(original, **update)
+            delta = after["start_time"] - original["start_time"]
+            preview.append({"note_id": note_id, "before": original, "after": after,
+                            "changed_fields": sorted(effective),
+                            "timing_delta_beats": delta, "timing_delta_ms": delta * 60000.0 / tempo})
+        result = {"dry_run": dry_run, "status": "preview", "write_may_have_occurred": False,
+                  "before_fingerprint": before["fingerprint"], "tempo": tempo,
+                  "note_count": len(notes), "requested_note_count": len(changes),
+                  "changed_note_count": len(planned), "no_op_note_count": len(changes) - len(planned),
+                  "preview": preview, "inverse_changes": inverse,
+                  "expression_evidence": "Native note IDs are retained; MPE/audible behavior is not independently measured."}
+        if dry_run:
+            return result
+        if not planned:
+            result.update({"status": "no_change", "verified": True,
+                           "after_fingerprint": before["fingerprint"],
+                           "inverse_expected_fingerprint": before["fingerprint"]})
+            return result
+        vector = self._test_note_vector(clip)
+        fresh, _ = self._test_note_dicts(vector)
+        if fresh != notes:
+            raise ValueError("stale_target: native notes changed during validation")
+        # This vector must remain the native C++ type; Python lists/dicts are rejected by Live.
+        for note in vector:
+            for field, value in planned.get(note.note_id, {}).items():
+                setattr(note, field, value)
+        own_undo = not getattr(self, "_test_batch_depth", 0)
+        if own_undo:
+            self._song.begin_undo_step()
+        try:
+            result["write_may_have_occurred"] = True
+            clip.apply_note_modifications(vector)
+        except Exception as error:
+            result.update({"status": "apply_failed", "error": str(error)})
+        else:
+            result["status"] = "applied"
+        finally:
+            if own_undo:
+                try:
+                    self._song.end_undo_step()
+                except Exception as error:
+                    # Losing the undo acknowledgement must not suppress note readback.
+                    result["undo_error"] = str(error)
+        try:
+            after, actual = self._test_clip_data(track, clip, view)
+            expected = [dict(n, **planned.get(n["note_id"], {})) for n in notes]
+            mismatches = []
+            actual_by_id = {n["note_id"]: n for n in actual}
+            if set(actual_by_id) != set(existing) or len(actual) != len(notes):
+                mismatches.append("note_ids_or_count")
+            for note in expected:
+                current = actual_by_id.get(note["note_id"])
+                if current is None:
+                    continue
+                for field, value in note.items():
+                    got = current.get(field)
+                    equal = (math.isclose(value, got, rel_tol=1e-9, abs_tol=1e-7)
+                             if isinstance(value, (int, float)) and not isinstance(value, bool)
+                             and isinstance(got, (int, float)) else value == got)
+                    if not equal:
+                        mismatches.append({"note_id": note["note_id"], "field": field,
+                                           "expected": value, "actual": got})
+            result.update({"after_fingerprint": after["fingerprint"], "verified": not mismatches,
+                           "verification_mismatches": mismatches,
+                           "inverse_expected_fingerprint": after["fingerprint"]})
+            if mismatches and result["status"] == "applied":
+                result["status"] = "verification_failed"
+        except Exception as error:
+            result.update({"verified": False, "readback_error": str(error)})
+            if result["status"] == "applied":
+                result["status"] = "readback_failed"
+        return result
+
+    def _test_device(self, track_index, device_index, track_type="track", chain_path=None):
+        if track_type not in ("track", "return", "master"):
+            raise ValueError("track_type must be track, return, or master")
+        self._test_index(track_index, "track_index")
+        self._test_index(device_index, "device_index")
+        path = [] if chain_path is None else chain_path
+        if not isinstance(path, list) or len(path) > 16 or len(path) % 2:
+            raise ValueError("chain_path must contain up to eight chain/device index pairs")
+        device = self._get_device(track_index, device_index, track_type)
+        for offset in range(0, len(path), 2):
+            chains = getattr(device, "chains", ())
+            chain_index = self._test_index(path[offset], "chain index", len(chains))
+            devices = chains[chain_index].devices
+            inner_index = self._test_index(path[offset + 1], "chain device index", len(devices))
+            device = devices[inner_index]
+        return device
+
+    def _get_device_test_state(self, track_index, device_index, track_type="track", chain_path=None):
+        device = self._test_device(track_index, device_index, track_type, chain_path)
+        parameters = []
+        schema = []
+        for index, parameter in enumerate(device.parameters):
+            fields, unavailable = self._test_fields(parameter, (
+                "name", "original_name", "value", "display_value", "default_value", "min", "max",
+                "is_enabled", "is_quantized", "automation_state", "state"))
+            fields.update({"index": index, "identity": self._test_identity(parameter),
+                           "remote_control_state": "unknown_not_exposed"})
+            try:
+                fields["display"] = parameter.str_for_value(parameter.value)
+            except Exception as error:
+                fields["display"] = None
+                unavailable["display"] = type(error).__name__
+            fields["value_items"] = None
+            if fields["is_quantized"]:
+                try:
+                    fields["value_items"] = [str(value) for value in parameter.value_items]
+                except Exception as error:
+                    unavailable["value_items"] = type(error).__name__
+            fields["unavailable"] = unavailable
+            parameters.append(fields)
+            schema.append({key: fields[key] for key in (
+                "identity", "index", "name", "min", "max", "is_quantized", "value_items")})
+        metadata, unavailable = self._test_fields(device, ("name", "class_name", "class_display_name"))
+        identity = self._test_identity(device)
+        editor, editor_missing = self._test_fields(device, ("is_editor_open",))
+        plugin = metadata["class_name"] == "PluginDevice"
+        return {"track_index": track_index, "device_index": device_index, "track_type": track_type,
+                "chain_path": [] if chain_path is None else chain_path,
+                "device_identity": identity, "runtime_scope": self._test_scope,
+                "identity_kind": "bridge_scoped_live_object", "metadata": metadata,
+                "unavailable": unavailable, "parameter_count": len(parameters), "parameters": parameters,
+                "current_song_time": getattr(self._song, "current_song_time", None),
+                "fingerprint": self._test_digest({"runtime_scope": self._test_scope,
+                                                  "device_identity": identity, "schema": schema}),
+                "editor": {"supported": plugin and not editor_missing,
+                           "is_editor_open": editor["is_editor_open"],
+                           "reason": "supported" if plugin and not editor_missing else "not_exposed_by_this_live_device"},
+                "m4l_action_status": {"supported": False, "status": "not_exposed",
+                                      "reason": "Custom Max UI actions and internal completion status require an explicit device contract; parameter indices are not guessed."}}
+
+    def _set_test_device_parameter(self, track_index, device_index, parameter, value,
+                                   expected_fingerprint, expected_value=None, track_type="track",
+                                   chain_path=None, dry_run=True):
+        if not isinstance(dry_run, bool):
+            raise ValueError("dry_run must be a boolean")
+        state = self._get_device_test_state(track_index, device_index, track_type, chain_path)
+        if not isinstance(expected_fingerprint, str) or state["fingerprint"] != expected_fingerprint:
+            raise ValueError("stale_target: device identity or parameter schema changed")
+        device = self._test_device(track_index, device_index, track_type, chain_path)
+        if isinstance(parameter, bool) or not isinstance(parameter, (str, int)):
+            raise ValueError("parameter must be an exact name or nonnegative index")
+        if isinstance(parameter, str):
+            matches = [i for i, candidate in enumerate(device.parameters) if candidate.name == parameter]
+            if len(matches) != 1:
+                raise ValueError("Parameter name is missing or ambiguous; use its read-back index")
+            index = matches[0]
+        else:
+            index = self._test_index(parameter, "parameter", len(device.parameters))
+        param = self._resolve_parameter(device, index)
+        if not getattr(param, "is_enabled", False) or getattr(param, "state", None) == 2:
+            raise ValueError("Parameter is disabled or cannot be changed; no value was written")
+        before = self._test_number(param.value, "current parameter value")
+        if expected_value is not None:
+            expected = self._test_number(expected_value, "expected_value")
+            if before != expected:
+                raise ValueError("stale_value: parameter value changed; read it again before writing")
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValueError("value must be a finite native number or supported display string")
+        proposed, warning = _parameter_value(param, value)
+        if isinstance(value, str):
+            # Display inversion is approximate; an unchanged displayed value must not
+            # create a spurious write. Native numeric requests retain their precision.
+            try:
+                current_display = param.str_for_value(before)
+                if " ".join(value.split()).casefold() == " ".join(current_display.split()).casefold():
+                    proposed = before
+            except Exception:
+                pass
+        target = {"track_index": track_index, "device_index": device_index,
+                  "track_type": track_type, "chain_path": [] if chain_path is None else chain_path,
+                  "expected_fingerprint": state["fingerprint"]}
+        inverse = {"type": "set_test_device_parameter",
+                   "params": dict(target, parameter=index, value=before,
+                                  expected_value=proposed, dry_run=False)}
+        result = {"status": "preview", "dry_run": dry_run, "before": before,
+                  "requested": value, "proposed": proposed, "warning": warning,
+                  "parameter": param.name, "parameter_index": index,
+                  "required_target": dict(target, device_identity=state["device_identity"],
+                                          parameter_identity=self._test_identity(param)),
+                  "inverse_command": inverse, "written": False,
+                  "write_may_have_occurred": False, "current_value": before}
+        if proposed == before:
+            return dict(result, status="no_change", verified=True, readback=before)
+        if dry_run:
+            return result
+        result["write_may_have_occurred"] = True
+        try:
+            param.value = proposed
+        except Exception as error:
+            result.update({"status": "apply_failed", "error": str(error), "written": None})
+        else:
+            result.update({"status": "applied", "written": True})
+        try:
+            actual = self._test_number(param.value, "parameter readback")
+            verified = math.isclose(actual, proposed, rel_tol=1e-9, abs_tol=1e-7)
+            result.update({"readback": actual, "current_value": actual, "verified": verified})
+            inverse["params"]["expected_value"] = actual
+            if not verified and result["status"] == "applied":
+                result["status"] = "verification_failed"
+        except Exception as error:
+            result.update({"readback": None, "current_value": "unknown", "verified": False,
+                           "readback_error": str(error), "inverse_requires_readback": True})
+            if result["status"] == "applied":
+                result["status"] = "readback_failed"
+        return result
+
+    def _set_plugin_editor_state(self, track_index, device_index, opened, expected_fingerprint,
+                                 track_type="track", chain_path=None, dry_run=True):
+        if not isinstance(opened, bool) or not isinstance(dry_run, bool):
+            raise ValueError("opened and dry_run must be booleans")
+        state = self._get_device_test_state(track_index, device_index, track_type, chain_path)
+        if not isinstance(expected_fingerprint, str) or state["fingerprint"] != expected_fingerprint:
+            raise ValueError("stale_target: device identity or parameter schema changed")
+        if not state["editor"]["supported"]:
+            return {"status": "unsupported", "reason": state["editor"]["reason"], "written": False}
+        result = {"dry_run": dry_run, "before": state["editor"]["is_editor_open"],
+                  "requested": opened, "written": False, "write_may_have_occurred": False,
+                  "current_state": state["editor"]["is_editor_open"],
+                  "fingerprint": state["fingerprint"]}
+        if dry_run:
+            result["status"] = "preview"
+            return result
+        device = self._test_device(track_index, device_index, track_type, chain_path)
+        result["write_may_have_occurred"] = True
+        try:
+            device.is_editor_open = opened
+        except Exception as error:
+            result.update({"status": "apply_failed", "error": str(error), "written": None})
+        else:
+            result.update({"status": "applied", "written": True})
+        try:
+            actual = bool(device.is_editor_open)
+            result.update({"readback": actual, "current_state": actual, "verified": actual == opened})
+            if not result["verified"] and result["status"] == "applied":
+                result["status"] = "verification_failed"
+        except Exception as error:
+            result.update({"readback": None, "current_state": "unknown", "verified": False,
+                           "readback_error": str(error)})
+            if result["status"] == "applied":
+                result["status"] = "readback_failed"
+        return result
+
+    def _get_clip_automation_snapshot(self, track_index, clip_index, device_index, parameter,
+                                      view="session", track_type="track", chain_path=None,
+                                      sample_times=None):
+        if track_type != "track":
+            raise ValueError("Clip automation snapshots require a regular track with its own clips")
+        times = [] if sample_times is None else sample_times
+        if not isinstance(times, list) or len(times) > 128:
+            raise ValueError("sample_times must contain at most 128 times in beats")
+        times = [self._test_number(value, "sample time", 0) for value in times]
+        track, clip = self._test_clip(track_index, clip_index, view)
+        device = self._test_device(track_index, device_index, track_type, chain_path)
+        param = self._resolve_parameter(device, parameter)
+        result = {"view": view, "track_index": track_index, "clip_index": clip_index,
+                  "clip_identity": self._test_identity(clip), "device_identity": self._test_identity(device),
+                  "parameter": param.name, "parameter_identity": self._test_identity(param),
+                  "samples": [], "created_envelope": False}
+        getter = getattr(clip, "automation_envelope", None)
+        if not callable(getter):
+            return dict(result, status="unsupported", reason="automation_envelope is not exposed")
+        envelope = getter(param)
+        if envelope is None:
+            return dict(result, status="absent", has_envelope=False)
+        if not callable(getattr(envelope, "value_at_time", None)):
+            return dict(result, status="unsupported", has_envelope=True,
+                        reason="value_at_time is not exposed; no envelope was created")
+        result["samples"] = [{"time": value, "value": envelope.value_at_time(value)} for value in times]
+        return dict(result, status="read", has_envelope=True, sample_count=len(times))
+
+    def _get_max_device_info(self, track_index, device_index, track_type="track", chain_path=None):
+        device = self._test_device(track_index, device_index, track_type, chain_path)
+        state = self._get_device_test_state(track_index, device_index, track_type, chain_path)
+        result = {"device_identity": state["device_identity"], "fingerprint": state["fingerprint"],
+                  "metadata": state["metadata"], "banks": [],
+                  "m4l_action_status": state["m4l_action_status"]}
+        methods = ("get_bank_count", "get_bank_name", "get_bank_parameters")
+        result["capabilities"] = {name: callable(getattr(device, name, None)) for name in methods}
+        if not all(result["capabilities"].values()):
+            return dict(result, status="unsupported", reason="Max device bank API is not fully exposed")
+        count = int(device.get_bank_count())
+        if not 0 <= count <= 256:
+            raise ValueError("Unexpected Max bank count outside 0..256")
+        for index in range(count):
+            values = list(device.get_bank_parameters(index))
+            name = device.get_bank_name(index)
+            if not isinstance(name, str):
+                name = [str(part) for part in name]
+            result["banks"].append({"index": index, "name": name,
+                                    "parameter_indices": [int(value) for value in values]})
+        return dict(result, status="read", bank_count=count)
+
     # ── Grooves, audio clips, routing, automation, and clip ops ───────
 
     def _get_clip(self, track_index, clip_index):
@@ -1396,6 +1959,19 @@ class AbletonMCP(ControlSurface):
         clip = self._get_clip(track_index, clip_index)
         device = self._get_device(track_index, device_index)
         param = self._resolve_parameter(device, parameter)
+        if not isinstance(points, list) or not 1 <= len(points) <= 4096:
+            raise ValueError("points must contain 1..4096 automation points")
+        checked = []
+        for point in points:
+            if not isinstance(point, dict) or set(point) - {"time", "value", "duration"}:
+                raise ValueError("Each automation point accepts only time, value, and duration")
+            beat = self._test_number(point.get("time"), "automation time", 0)
+            duration = self._test_number(point.get("duration", 0), "automation duration", 0)
+            if not math.isfinite(beat + duration):
+                raise ValueError("automation time plus duration must be finite")
+            value = self._test_number(point.get("value"), "automation value", param.min, param.max)
+            checked.append({"time": beat, "duration": duration, "value": value})
+        # Validate the entire request before selecting a clip or deleting an envelope.
         # Live only creates a clip envelope for the currently-viewed detail clip.
         try:
             self._song.view.detail_clip = clip
@@ -1414,10 +1990,15 @@ class AbletonMCP(ControlSurface):
                 "Automation envelope unavailable for '{}' on '{}' (class={}). "
                 "This Live build may not support clip automation for this parameter.".format(
                     param.name, device.name, getattr(device, "class_name", "?")))
-        for pt in points:
-            env.insert_step(float(pt["time"]), 0.0, float(pt["value"]))
-        return {"parameter": param.name, "point_count": len(points),
-                "device": device.name}
+        for point in checked:
+            env.insert_step(point["time"], point["duration"], point["value"])
+        zero_duration_count = sum(point["duration"] == 0 for point in checked)
+        result = {"parameter": param.name, "point_count": len(checked),
+                  "device": device.name, "points": checked,
+                  "zero_duration_count": zero_duration_count}
+        if zero_duration_count:
+            result["warning"] = "Zero-duration steps were requested; use positive duration for sustained automation values and read the envelope back."
+        return result
 
     def _clear_automation(self, track_index, clip_index, device_index, parameter):
         clip = self._get_clip(track_index, clip_index)
@@ -1593,7 +2174,10 @@ class AbletonMCP(ControlSurface):
         """Run a list of {type, params} commands atomically-ish: executed in one
         main-thread task, wrapped in a single undo step. Stops at first error."""
         results = []
+        reported_failure = None
         self._song.begin_undo_step()
+        previous_depth = getattr(self, "_test_batch_depth", 0)
+        self._test_batch_depth = previous_depth + 1
         try:
             for i, cmd in enumerate(commands):
                 ctype = self._BATCH_ALIASES.get(cmd.get("type", ""), cmd.get("type", ""))
@@ -1602,12 +2186,36 @@ class AbletonMCP(ControlSurface):
                     raise Exception(f"batch[{i}]: unknown command '{ctype}'")
                 if ctype == "batch":
                     raise Exception("batch cannot nest")
-                results.append({"type": ctype, "result": handler(self, cmd.get("params", {}))})
+                outcome = handler(self, cmd.get("params", {}))
+                results.append({"type": ctype, "result": outcome})
+                if isinstance(outcome, dict) and (
+                    outcome.get("status") in ("apply_failed", "verification_failed", "readback_failed")
+                    or (outcome.get("verified") is False
+                        and (outcome.get("write_may_have_occurred") or outcome.get("written")))
+                ):
+                    # Failed verification can be a partial write, not an exception.
+                    # Stop dependent edits while retaining the complete inverse/readback.
+                    reported_failure = {
+                        "status": "batch_failed", "executed": len(results), "completed": i,
+                        "total": len(commands), "results": results, "failed_index": i,
+                        "failed_type": ctype, "failed_result": outcome, "partial": True,
+                        "rollback_performed": False,
+                        "undo_hint": "Earlier writes and this failed operation may have applied. Inspect failed_result/readback before retrying; the batch is one undo step unless undo_error is reported.",
+                    }
+                    break
         except Exception as e:
             raise Exception(f"batch failed at step {len(results)} of {len(commands)}: {e} "
                             f"(completed steps are one undo away)")
         finally:
-            self._song.end_undo_step()
+            self._test_batch_depth = previous_depth
+            try:
+                self._song.end_undo_step()
+            except Exception as error:
+                if reported_failure is None:
+                    raise
+                reported_failure["undo_error"] = str(error)
+        if reported_failure is not None:
+            return reported_failure
         return {"executed": len(results), "results": results}
 
     # -- browser search by display name --

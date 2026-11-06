@@ -1,0 +1,10 @@
+{
+  "transport": "Live Python Remote Script",
+  "note": "These Python capabilities are not advertised as members of the official Max for Live LOM inventory. Check the actual runtime before use.",
+  "members": [
+    {"identifier": "Clip.automation_envelope", "tools": ["get_clip_automation_snapshot"], "status": "implemented_offline", "runtime_acceptance": "not_run"},
+    {"identifier": "AutomationEnvelope.insert_step", "tools": ["write_automation"], "status": "duration_fix_offline", "runtime_acceptance": "not_run"},
+    {"identifier": "Song.save_as", "tools": [], "status": "unsupported_requires_native_gui", "runtime_acceptance": "not_run"},
+    {"identifier": "MaxDevice.custom_action_status", "tools": [], "status": "requires_device_contract", "runtime_acceptance": "not_run"}
+  ]
+}

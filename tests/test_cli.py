@@ -29,7 +29,12 @@ def test_replace_requires_opt_in_and_preserves_every_backup(tmp_path):
 def test_missing_library_and_symlink_are_rejected(tmp_path):
     with pytest.raises(ValueError, match="not found"):
         cli.install(tmp_path / "missing")
-    (tmp_path / "Remote Scripts").symlink_to(tmp_path, target_is_directory=True)
+    try:
+        (tmp_path / "Remote Scripts").symlink_to(tmp_path, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("This Windows account cannot create symlinks")
+        raise
     with pytest.raises(ValueError, match="symlink"):
         cli.install(tmp_path)
 

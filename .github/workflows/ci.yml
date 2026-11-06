@@ -17,6 +17,8 @@ jobs:
         run: uv run --extra dev ruff format --check .
       - name: Byte-compile remote script
         run: python3 -m py_compile ableton_live_mcp/remote_script/__init__.py
+      - name: Validate pinned official API inventory (offline)
+        run: python3 scripts/sync_lom_inventory.py
 
   test:
     runs-on: ubuntu-latest

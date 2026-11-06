@@ -57,6 +57,8 @@ logs/
 
 # Internal working notes - keep local, never publish
 docs/
+work/
+CONTROL.md
 
 
 # Lock files (optional - uncomment if you don't want to track)

@@ -4,3 +4,6 @@ include scripts/export_tool_catalog.py
 prune plugins
 exclude RELEASE_CHECKLIST.md
 exclude scripts/package_plugin.py
+include API_ROADMAP.md
+include scripts/sync_lom_inventory.py
+recursive-include api *.json

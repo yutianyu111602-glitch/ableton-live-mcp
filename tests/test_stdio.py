@@ -25,7 +25,14 @@ def test_stdio_handshake_and_readonly_capability_call():
                 info = await session.initialize()
                 assert info.serverInfo.name == "Ableton Live MCP Server"
                 tools = await session.list_tools()
-                assert "analyze_audio_file" in {tool.name for tool in tools.tools}
+                tool_names = {tool.name for tool in tools.tools}
+                assert {
+                    "analyze_audio_file",
+                    "get_test_context",
+                    "get_clip_snapshot",
+                    "modify_notes_by_id",
+                    "get_parameter_samples",
+                } <= tool_names
                 result = await session.call_tool("describe_capabilities", {})
                 assert not result.isError
                 assert "groups" in result.content[0].text

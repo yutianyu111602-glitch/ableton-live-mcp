@@ -16,7 +16,7 @@ GROUP_MODULES = {
     "arrangement": ["arrangement"],
     "generators": ["generators", "generators_advanced", "motif"],
     "audio": ["audio"],
-    "analysis": ["analysis", "keys", "audio_analysis"],
+    "analysis": ["analysis", "keys", "audio_analysis", "test_interfaces"],
     "offline": ["offline", "offline_racks"],
     "recipes": ["recipes"],
     "prompts": ["prompts"],
@@ -32,7 +32,7 @@ GROUP_DESCRIPTIONS = {
     "arrangement": "place/read/delete arrangement clips, write clip automation",
     "generators": "drum patterns, euclidean rhythms, chord progressions, jazz voicings, voice-leading melodies, walking bass, genre progressions, humanize, motif transforms, minimalist processes, session setup",
     "audio": "record a section to a WAV without the export dialog",
-    "analysis": "labelled mix heuristics, bounded local audio measurements, key/scale detection, session diff, and a toolset map",
+    "analysis": "test context, identity-checked native MIDI edits, nested device diagnostics, parameter/envelope sampling, saved-file verification, mix heuristics and toolset map",
     "offline": "parse, diff, lint, and detect key in saved .als files, and parse .adg/.adv racks, all with Live closed",
     "recipes": "scaffold a genre starter (lofi, house) in one call",
 }

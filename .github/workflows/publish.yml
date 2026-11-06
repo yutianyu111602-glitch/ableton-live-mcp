@@ -17,6 +17,8 @@ jobs:
       - run: uv run --frozen --extra dev pytest -q
 
   publish:
+    # Forks build/test locally; upstream owns these existing package identities.
+    if: github.repository == 'wstierhout/ableton-live-mcp'
     needs: test
     runs-on: ubuntu-latest
     environment: pypi
@@ -29,6 +31,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   registry:
+    if: github.repository == 'wstierhout/ableton-live-mcp'
     needs: publish
     runs-on: ubuntu-latest
     permissions:

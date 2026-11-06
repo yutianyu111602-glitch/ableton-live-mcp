@@ -1,0 +1,76 @@
+{
+  "Clip.get_all_notes_extended": {
+    "status": "implemented_offline",
+    "tools": [
+      "get_clip_snapshot",
+      "modify_notes_by_id"
+    ],
+    "runtime_acceptance": "not_run",
+    "tests": [
+      "tests/test_test_interfaces_bridge.py"
+    ]
+  },
+  "Clip.apply_note_modifications": {
+    "status": "implemented_offline",
+    "tools": [
+      "modify_notes_by_id"
+    ],
+    "runtime_acceptance": "not_run",
+    "tests": [
+      "tests/test_test_interfaces_bridge.py"
+    ]
+  },
+  "PluginDevice.is_editor_open": {
+    "status": "implemented_offline",
+    "tools": [
+      "get_device_test_state",
+      "set_plugin_editor_state"
+    ],
+    "runtime_acceptance": "not_run",
+    "tests": [
+      "tests/test_test_interfaces_bridge.py"
+    ]
+  },
+  "MaxDevice.get_bank_count": {
+    "status": "implemented_offline",
+    "tools": [
+      "get_max_device_info"
+    ],
+    "runtime_acceptance": "not_run",
+    "tests": [
+      "tests/test_test_interfaces_bridge.py"
+    ]
+  },
+  "MaxDevice.get_bank_name": {
+    "status": "implemented_offline",
+    "tools": [
+      "get_max_device_info"
+    ],
+    "runtime_acceptance": "not_run",
+    "tests": [
+      "tests/test_test_interfaces_bridge.py"
+    ]
+  },
+  "MaxDevice.get_bank_parameters": {
+    "status": "implemented_offline",
+    "tools": [
+      "get_max_device_info"
+    ],
+    "runtime_acceptance": "not_run",
+    "tests": [
+      "tests/test_test_interfaces_bridge.py"
+    ]
+  },
+  "DeviceParameter.value": {
+    "status": "implemented_offline",
+    "tools": [
+      "get_device_test_state",
+      "set_test_device_parameter",
+      "get_parameter_samples"
+    ],
+    "runtime_acceptance": "not_run",
+    "tests": [
+      "tests/test_batch_note_failures.py"
+    ]
+  }
+}
