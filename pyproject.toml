@@ -1,7 +1,7 @@
 [project]
 name = "mcp-server-ableton-live"
-version = "1.8.1+testapi.2"
-description = "Control Ableton Live 11/12 with 166 typed MCP tools for MIDI, devices, arrangement, mixing, automation, and offline .als analysis"
+version = "1.8.1+fullapi.2"
+description = "Control Ableton Live 11/12 with 175 typed MCP tools for MIDI, devices, arrangement, mixing, automation, and offline .als analysis"
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = [
@@ -60,6 +60,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["ableton_live_mcp", "ableton_live_mcp.tools", "ableton_live_mcp.remote_script"]
+
+[tool.setuptools.package-data]
+ableton_live_mcp = ["lom_schema.json", "max_bridge/*"]
 
 [project.urls]
 "Homepage" = "https://abletonmcp.com"

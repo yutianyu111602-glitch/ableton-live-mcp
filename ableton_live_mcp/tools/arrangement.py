@@ -116,9 +116,10 @@ def write_automation(
     """Replace a Session clip's parameter envelope with explicit automation steps.
 
     points = [{"time": clip_beats, "duration": positive_beats, "value": native_value}, ...].
-    Each duration holds that value over the requested interval. Legacy points
-    omitting duration retain zero duration and return a warning; supply duration
-    for sustained automation. Replaces the entire existing parameter envelope.
+    Each duration holds that value over the requested interval. Omitting duration
+    holds until the next point; the final point holds until the actual clip end.
+    Zero duration, overlap and out-of-bounds points are rejected before clearing.
+    Replaces the entire existing parameter envelope.
     Verify with get_clip_automation_snapshot; this is not listening evidence.
     """
     r = get_ableton_connection().send_command(

@@ -28,7 +28,7 @@ from _Framework.ControlSurface import ControlSurface
 DEFAULT_PORT = int(os.environ.get("ABLETON_MCP_PORT", "9877"))
 HOST = os.environ.get("ABLETON_MCP_HOST", "127.0.0.1")
 MAX_REQUEST_BYTES = 10 * 1024 * 1024  # backstop against a poisoned request buffer
-BRIDGE_VERSION = "1.8.1+testapi.2"
+BRIDGE_VERSION = "1.8.1+fullapi.2"
 
 
 def _display_number(text):
@@ -135,6 +135,14 @@ class AbletonMCP(ControlSurface):
         """Called when Ableton closes or the control surface is removed"""
         self.log_message("AbletonMCP disconnecting...")
         self.running = False
+        runtime = getattr(self, "_lom_runtime", None)
+        if runtime is not None:
+            try:
+                cleanup = runtime.close()
+                if cleanup.get("cleanup_errors"):
+                    self.log_message("LOM listener cleanup incomplete: " + str(cleanup["cleanup_errors"]))
+            except Exception as error:
+                self.log_message("LOM cleanup failed during disconnect: " + str(error))
 
         # Stop the server
         if self.server:
@@ -337,6 +345,8 @@ class AbletonMCP(ControlSurface):
     # ALL commands (mutating and read-only) are marshalled onto Live's main
     # thread by _process_command; the two dicts only document intent.
     _MUTATING_COMMANDS = {
+        # The inner official-catalogue operation enforces access/dry-run/identity.
+        "lom_request": lambda s, p: s._lom_request(p),
         "create_midi_track": lambda s, p: s._create_midi_track(p.get("index", -1)),
         "create_audio_track": lambda s, p: s._create_audio_track(p.get("index", -1)),
         "create_return_track": lambda s, p: s._create_return_track(),
@@ -470,6 +480,14 @@ class AbletonMCP(ControlSurface):
 
     # One merged lookup view; the two source dicts document intent.
     _ALL_COMMANDS = {**_MUTATING_COMMANDS, **_READONLY_COMMANDS}
+
+    def _lom_request(self, payload):
+        if not hasattr(self, "_lom_runtime"):
+            # The installer copies these siblings beside this Remote Script.
+            # Package imports in the MCP process never import _Framework.
+            from .lom_runtime import LomRuntime
+            self._lom_runtime = LomRuntime(self._song, self.application(), self)
+        return self._lom_runtime.request(payload)
 
     # Commands whose main-thread work can exceed the default 10 s budget.
     _COMMAND_TIMEOUTS = {"create_audio_clip": 60.0}
@@ -1961,16 +1979,36 @@ class AbletonMCP(ControlSurface):
         param = self._resolve_parameter(device, parameter)
         if not isinstance(points, list) or not 1 <= len(points) <= 4096:
             raise ValueError("points must contain 1..4096 automation points")
+        # Preserve the installed bridge's sustained-step semantics. An omitted
+        # duration reaches the next point, or the active clip boundary at the end.
+        clip_end = self._test_number(
+            clip.loop_end if clip.looping else clip.end_marker, "clip automation end", 0)
+        minimum = self._test_number(param.min, "native parameter minimum")
+        maximum = self._test_number(param.max, "native parameter maximum")
+        if minimum > maximum:
+            raise ValueError("Native parameter minimum exceeds maximum")
         checked = []
         for point in points:
             if not isinstance(point, dict) or set(point) - {"time", "value", "duration"}:
                 raise ValueError("Each automation point accepts only time, value, and duration")
             beat = self._test_number(point.get("time"), "automation time", 0)
-            duration = self._test_number(point.get("duration", 0), "automation duration", 0)
-            if not math.isfinite(beat + duration):
+            value = self._test_number(point.get("value"), "automation value", minimum, maximum)
+            entry = {"time": beat, "value": value}
+            if "duration" in point:
+                entry["duration"] = self._test_number(point["duration"], "automation duration", 0)
+            checked.append(entry)
+        steps = []
+        for index, point in enumerate(checked):
+            beat, value = point["time"], point["value"]
+            next_time = checked[index + 1]["time"] if index + 1 < len(checked) else clip_end
+            duration = point.get("duration", next_time - beat)
+            if not math.isfinite(duration) or not math.isfinite(beat + duration):
                 raise ValueError("automation time plus duration must be finite")
-            value = self._test_number(point.get("value"), "automation value", param.min, param.max)
-            checked.append({"time": beat, "duration": duration, "value": value})
+            if next_time <= beat or duration <= 0 or beat + duration > next_time + 1e-9:
+                raise ValueError("Automation points must increase and have positive, non-overlapping durations inside the clip")
+            if next_time > clip_end + 1e-9:
+                raise ValueError("Automation time is outside the clip range")
+            steps.append((beat, duration, value))
         # Validate the entire request before selecting a clip or deleting an envelope.
         # Live only creates a clip envelope for the currently-viewed detail clip.
         try:
@@ -1990,15 +2028,10 @@ class AbletonMCP(ControlSurface):
                 "Automation envelope unavailable for '{}' on '{}' (class={}). "
                 "This Live build may not support clip automation for this parameter.".format(
                     param.name, device.name, getattr(device, "class_name", "?")))
-        for point in checked:
-            env.insert_step(point["time"], point["duration"], point["value"])
-        zero_duration_count = sum(point["duration"] == 0 for point in checked)
-        result = {"parameter": param.name, "point_count": len(checked),
-                  "device": device.name, "points": checked,
-                  "zero_duration_count": zero_duration_count}
-        if zero_duration_count:
-            result["warning"] = "Zero-duration steps were requested; use positive duration for sustained automation values and read the envelope back."
-        return result
+        for start, duration, value in steps:
+            env.insert_step(start, duration, value)
+        return {"parameter": param.name, "point_count": len(points),
+                "device": device.name, "steps": steps}
 
     def _clear_automation(self, track_index, clip_index, device_index, parameter):
         clip = self._get_clip(track_index, clip_index)
@@ -2189,7 +2222,7 @@ class AbletonMCP(ControlSurface):
                 outcome = handler(self, cmd.get("params", {}))
                 results.append({"type": ctype, "result": outcome})
                 if isinstance(outcome, dict) and (
-                    outcome.get("status") in ("apply_failed", "verification_failed", "readback_failed")
+                    outcome.get("status") in ("apply_failed", "verification_failed", "readback_failed", "error", "partial", "unsupported")
                     or (outcome.get("verified") is False
                         and (outcome.get("write_may_have_occurred") or outcome.get("written")))
                 ):

@@ -15,7 +15,7 @@ def test_stdio_handshake_and_readonly_capability_call():
             args=["-m", "ableton_live_mcp.server"],
             env={
                 **os.environ,
-                "ABLETON_TOOLSETS": "analysis",
+                "ABLETON_TOOLSETS": "analysis,lom",
                 "ABLETON_HOST": "127.0.0.1",
                 "ABLETON_PORT": "1",
             },
@@ -33,6 +33,20 @@ def test_stdio_handshake_and_readonly_capability_call():
                     "modify_notes_by_id",
                     "get_parameter_samples",
                 } <= tool_names
+                assert {
+                    "lom_describe",
+                    "lom_resolve",
+                    "lom_get",
+                    "lom_set",
+                    "lom_call",
+                    "lom_observe",
+                    "lom_poll",
+                    "lom_unobserve",
+                    "lom_capabilities",
+                } <= tool_names
+                catalogue = await session.call_tool("lom_describe", {})
+                assert not catalogue.isError
+                assert '"member_count": 588' in catalogue.content[0].text
                 result = await session.call_tool("describe_capabilities", {})
                 assert not result.isError
                 assert "groups" in result.content[0].text

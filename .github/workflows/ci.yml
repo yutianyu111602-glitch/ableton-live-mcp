@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/full-lom-api]
   pull_request:
 
 jobs:
@@ -19,9 +19,14 @@ jobs:
         run: python3 -m py_compile ableton_live_mcp/remote_script/__init__.py
       - name: Validate pinned official API inventory (offline)
         run: python3 scripts/sync_lom_inventory.py
+      - name: Validate full LOM coverage ledger (offline)
+        run: uv run --frozen --extra dev python scripts/audit_lom_coverage.py --check
 
   test:
     runs-on: ubuntu-latest
+    env:
+      ABLETON_PORT: "1"
+      ABLETON_MAX_PORT: "1"
     strategy:
       matrix:
         python-version: ["3.10", "3.12", "3.13", "3.14"]

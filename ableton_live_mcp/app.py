@@ -35,6 +35,9 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         yield {}
     finally:
         warmup.cancel()
+        from .lom_backend import cleanup
+
+        await anyio.to_thread.run_sync(cleanup)
         disconnect_ableton()
         logger.info("AbletonMCP server shut down")
 

@@ -44,7 +44,9 @@ def test_uninstall_preserves_recovery_and_refuses_foreign_script(tmp_path):
     dest = cli._target(tmp_path)
     assert cli.uninstall(tmp_path) == 0
     assert not dest.exists()
-    assert next(dest.parent.glob("*.bak")).read_bytes() == cli._remote_script_source()
+    for name, source in cli._remote_script_payload().items():
+        assert not dest.with_name(name).exists()
+        assert any(p.read_bytes() == source for p in dest.parent.glob(name + ".*.bak"))
     dest.write_bytes(b"foreign")
     with pytest.raises(ValueError):
         cli.uninstall(tmp_path)

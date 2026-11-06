@@ -8,6 +8,7 @@ so adding a module means editing one place and the two stay in sync.
 
 # group -> the tool modules that implement it.
 GROUP_MODULES = {
+    "lom": ["lom"],
     "session": ["session"],
     "tracks": ["tracks"],
     "clips": ["clips"],
@@ -24,6 +25,7 @@ GROUP_MODULES = {
 
 # group -> one-line summary for agent orientation (describe_capabilities).
 GROUP_DESCRIPTIONS = {
+    "lom": "all official LOM objects: bounded catalogue, get/set/call, typed targets, native observations, Python and Max LiveAPI backends",
     "session": "transport, tempo, tap tempo, groove/swing, scenes, locators, record modes, song scale and tuning, Ableton Link, one-call snapshot",
     "tracks": "create/delete MIDI/audio/return tracks, delete devices, take lanes, group fold, volume/pan/mute/solo/arm/sends, routing, meters, crossfader",
     "clips": "create clips, write/edit MIDI notes (probability), quantize with strength, groove, loop, warp, pitch/gain",

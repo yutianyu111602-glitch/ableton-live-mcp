@@ -20,6 +20,11 @@ members are represented by their declaring object; counts are not tool counts.
 `source_candidates` identifies source-name matches for review. It is deliberately
 not an implemented-coverage score. `coverage_overrides.json` holds explicit reviewed
 mappings. `implemented_offline` and `runtime_acceptance: not_run` are distinct.
+Those first-iteration mappings are historical. The complete candidate supersedes
+them with `api/full_lom_coverage.json`: every declared member and documented
+get/set/call/observe operation has a bounded route through nine LOM tools. This
+ledger records implementation coverage separately from native validation; see
+`NATIVE_VALIDATION.md` for actual Live evidence and remaining limits.
 Python-only capabilities and unsupported custom actions are tracked separately in
 `api/python_extensions.json`.
 
@@ -49,9 +54,11 @@ members, implement bounded typed interfaces, and update the mapping with evidenc
 | `set_plugin_editor_state` | Identity-guarded preview/open/close only if the runtime exposes `is_editor_open`. |
 | `verify_saved_set` | Validate a named disk ALS and hash; never claims current unsaved RAM matches it. |
 
-`write_automation` now accepts an explicit nonnegative `duration` for each step.
-All points, native value ranges and finite endpoints are validated before clearing
-the old envelope. Legacy omitted durations remain zero and return a warning.
+`write_automation` accepts an explicit positive `duration` for each step. Omitted
+durations hold until the next point and, for the final point, the actual clip end.
+This preserves the active host's existing local repair. All points, native value
+ranges, ordering, overlap and finite endpoints are validated before clearing
+the old envelope. Explicit zero duration and clip-boundary overflow are refused.
 Envelope replacement is destructive and is not a transactional rollback guarantee.
 
 The existing local Windows save repair is retained: it requires a specific
@@ -75,7 +82,8 @@ boundary. No generic Save As API is fabricated.
 6. **Product acceptance:** separate VST/M4L GUI, LFO release, audio function and
    listening cases. Source/tests/parameter readback do not satisfy this stage.
 
-This candidate has not yet passed stages 4–6. Current user music projects must
+See FULL_LOM_PLAN.md for the subsequent complete API implementation. The initial
+testapi.2 candidate had not passed stages 4–6. Current user music projects must
 not be used as a write-test fixture. A bridge reload invalidates fingerprints.
 
 ## Subsequent iterations

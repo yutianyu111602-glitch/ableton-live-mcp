@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.8.1+fullapi.2 — independent development candidate
+
+- Nine bounded LOM gateways expose all 45 pinned official catalogue entries,
+  588 declared members and 1107 documented operations. Together with the ten
+  earlier test interfaces, the server has 175 tools; upstream 1.8.1 had 156.
+- Added a shared validating catalogue, Python native-object backend and optional
+  original Max for Live companion with scoped references, bounded observations,
+  identity guards, preview and no uncertain-write retry across backends.
+- Preserved inferred positive automation durations; added strict Boolean and
+  nullable-reference validation, signed ControlSurface IDs, canonical reference
+  verification, float32 readback and complete paired installer/package payloads.
+- Representative native tests ran in Live 12.4.1. Final paired activation,
+  exhaustive behavior and product/audio acceptance remain pending; known host
+  limitations and exact evidence boundaries are in `NATIVE_VALIDATION.md`.
+- Source publication is limited to the personal fork candidate branch. Upstream
+  registry publication stays guarded; no PyPI/MCP Registry version is released.
+
 ## 1.8.1 — 2026-09-16
 
 - Live 11: the Remote Script no longer logs `Server accept error: timed out` every

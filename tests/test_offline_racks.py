@@ -9,6 +9,8 @@ skips cleanly if it is not).
 import glob
 import gzip
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -259,13 +261,23 @@ def test_tool_raises_valueerror_on_bad_file(tmp_path):
 
 # ── real factory drum rack (optional) ────────────────────────────────
 
-_REAL_ADG_GLOBS = [
-    "/Users/wouterstierhout/Music/Ableton/Factory Packs/Chop and Swing/Drums/Wah Soul Kit.adg",
-    "/Users/wouterstierhout/Music/Ableton/Factory Packs/**/Drums/*.adg",
-]
+_REAL_ADG_GLOBS = [str(Path.home() / "Music/Ableton/Factory Packs/*/Drums/*.adg")]
+if os.name == "nt":
+    _REAL_ADG_GLOBS.insert(
+        0,
+        str(
+            Path(os.environ.get("PROGRAMDATA", "C:/ProgramData"))
+            / "Ableton/Live*/Resources/Core Library/Racks/Drum Racks/*/*.adg"
+        ),
+    )
 
 
 def _find_real_drum_rack():
+    explicit = os.environ.get("ABLETON_TEST_DRUM_RACK")
+    if explicit:
+        if not Path(explicit).is_file() or Path(explicit).suffix.lower() != ".adg":
+            raise ValueError("ABLETON_TEST_DRUM_RACK must name an existing .adg")
+        return explicit
     for pattern in _REAL_ADG_GLOBS:
         for hit in sorted(glob.glob(pattern, recursive=True)):
             return hit
@@ -275,7 +287,7 @@ def _find_real_drum_rack():
 def test_real_factory_drum_rack_parses():
     path = _find_real_drum_rack()
     if path is None:
-        pytest.skip("no factory drum-rack .adg installed on this machine")
+        pytest.skip("No drum-rack fixture found; set ABLETON_TEST_DRUM_RACK to an installed .adg")
     data, err = r._load(path, detail=True)
     assert err is None, err
     assert data["is_drum_rack"] is True

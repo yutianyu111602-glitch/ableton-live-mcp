@@ -455,21 +455,43 @@ def test_automation_positive_durations_reach_native_api_and_read_back_as_held_va
         {"time": 20, "duration": 4, "value": 0.2},
     ]
     result = f.bridge._write_automation(0, 0, 0, 0, points)
-    assert result["zero_duration_count"] == 0
+    assert result["steps"] == [(16.0, 4.0, 0.7), (20.0, 4.0, 0.2)]
+    assert "warning" not in result
     assert f.session.envelope.steps == [(16.0, 4.0, 0.7), (20.0, 4.0, 0.2)]
     samples = f.bridge._get_clip_automation_snapshot(0, 0, 0, 0, sample_times=[16, 18, 20, 23.9])
     assert [s["value"] for s in samples["samples"]] == [0.7, 0.7, 0.2, 0.2]
     assert samples["created_envelope"] is False
 
 
+@pytest.mark.parametrize("looping,clip_end", [(False, 64.0), (True, 32.0)])
+def test_automation_omitted_durations_hold_until_next_point_and_actual_clip_end(
+    setup_bridge, looping, clip_end
+):
+    f = setup_bridge
+    f.session.looping = looping
+    assert f.session.loop_end == 32.0 and f.session.end_marker == 64.0
+    result = f.bridge._write_automation(
+        0, 0, 0, 0, [{"time": 16, "value": 0.7}, {"time": 20, "value": 0.2}]
+    )
+    assert result["steps"] == [(16.0, 4.0, 0.7), (20.0, clip_end - 20.0, 0.2)]
+    assert f.session.envelope.value_at_time(19.9) == 0.7
+    assert f.session.envelope.value_at_time(clip_end - 0.1) == 0.2
+    assert f.session.envelope.value_at_time(clip_end) == -1.0
+    assert "warning" not in result and "zero_duration_count" not in result
+
+
 @pytest.mark.parametrize(
     "bad_point",
     [
         {"time": 2, "duration": -1, "value": 0.5},
+        {"time": 2, "duration": 0, "value": 0.5},
         {"time": float("nan"), "duration": 1, "value": 0.5},
         {"time": 2, "duration": 1, "value": 2},
         {"time": 2, "duration": True, "value": 0.5},
         {"time": 2, "duration": 1, "value": 0.5, "unknown": 1},
+        {"time": 0, "duration": 1, "value": 0.5},
+        {"time": 64, "duration": 1, "value": 0.5},
+        {"time": 2, "duration": 70, "value": 0.5},
     ],
 )
 def test_invalid_late_automation_point_preserves_existing_envelope_and_selection(
@@ -487,6 +509,21 @@ def test_invalid_late_automation_point_preserves_existing_envelope_and_selection
     assert f.session.envelope is prior and prior.steps == [(0, 4, 0.9)]
     assert not f.session.cleared and not f.session.envelope_creates
     assert f.song.view.detail_clip is selected
+
+
+def test_automation_overlapping_positive_steps_are_rejected_before_envelope_clear(setup_bridge):
+    f = setup_bridge
+    prior = FakeEnvelope()
+    f.session.envelope = prior
+    with pytest.raises(ValueError, match="non-overlapping"):
+        f.bridge._write_automation(
+            0,
+            0,
+            0,
+            0,
+            [{"time": 16, "duration": 5, "value": 0.2}, {"time": 20, "value": 0.5}],
+        )
+    assert f.session.envelope is prior and not f.session.cleared
 
 
 def test_automation_snapshot_never_creates_absent_envelope(setup_bridge):

@@ -6,4 +6,11 @@ exclude RELEASE_CHECKLIST.md
 exclude scripts/package_plugin.py
 include API_ROADMAP.md
 include scripts/sync_lom_inventory.py
+include scripts/build_lom_schema.py scripts/build_max_bridge.py scripts/package_lom_assets.py
+include FULL_LOM_PLAN.md
+include NATIVE_VALIDATION.md
+include scripts/audit_lom_coverage.py
+recursive-include max_bridge *.js *.json *.maxpat *.amxd *.md
+include ableton_live_mcp/lom_schema.json
+recursive-include ableton_live_mcp/max_bridge *
 recursive-include api *.json
